@@ -73,3 +73,10 @@ theorem-2d-particle-simulator.git
 cd residue-theorem-2d-particle-simulator
 pip install -r requirements.txt
 python main.py
+
+Copyright © 2026 Jade Siley-Winditt
+
+All rights reserved.
+
+This repository and its contents are provided for research and educational purposes only.  
+No commercial use, reproduction, modification, or distribution is permitted without prior written permission from the copyright holder.
