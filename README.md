@@ -67,9 +67,9 @@ Because the force field is a rational function (sum of simple poles), the net ci
 ---
 
 ## Quick Start
+git clone https://github.com/JadeAVsileyWinditt-Tec/residue-theorem-2d-particle-simulator-.git
 
-```bash
-git clone https://github.com/YOUR_USERNAME/residue-theorem-2d-particle-simulator.git
+theorem-2d-particle-simulator.git
 cd residue-theorem-2d-particle-simulator
 pip install -r requirements.txt
 python main.py
