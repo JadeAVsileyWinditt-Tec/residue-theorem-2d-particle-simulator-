@@ -1,3 +1,4 @@
+import time
 import pygame
 import numpy as np
 import torch
@@ -9,7 +10,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pygame.init()
 WIDTH, HEIGHT = 900, 700
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("NVIDIA CUDA 2D Physics Engine - TBU Keplerian Tarpit & Complex Analysis")
+pygame.display.set_caption("NVIDIA CUDA Physics Engine - TBU Tarpit & Complex Analysis")
 clock = pygame.time.Clock()
 
 # Color Palette
@@ -24,6 +25,7 @@ AXIS_COLOR = (60, 75, 95)
 AIRFOIL_COLOR = (255, 180, 50)
 SPHERE_WIRE_COLOR = (50, 70, 100)
 HORIZON_COLOR = (255, 80, 80)
+BENCHMARK_COLOR = (0, 255, 200)
 
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 SCALE = 80.0
@@ -52,7 +54,7 @@ def B_delta(r: float) -> float:
     """Sigmoid state measure B_delta(r)."""
     S_crit = S_potential(R_HORIZON)
     val = -(S_potential(r) - S_crit) / DELTA_TBU
-    val = np.clip(val, -50.0, 50.0)  # Prevent overflow
+    val = np.clip(val, -50.0, 50.0)
     return 1.0 / (1.0 + np.exp(val))
 
 
@@ -93,11 +95,8 @@ class ParticleManagerGPU:
     """Handles both Complex Vortex Dynamics and TBU Keplerian Tarpit Physics."""
 
     def __init__(self):
-        # General state
         self.positions = torch.empty((0,), dtype=torch.complex64, device=device)
         self.residues = torch.empty((0,), dtype=torch.complex64, device=device)
-
-        # TBU Polar physics state: [r, v_r, theta, l]
         self.tbu_states = torch.empty((0, 4), dtype=torch.float32, device=device)
 
     def add_particle(self, z: complex, residue: complex, vr0: float = -0.1, l0: float = 0.25):
@@ -106,11 +105,26 @@ class ParticleManagerGPU:
         self.positions = torch.cat([self.positions, new_z])
         self.residues = torch.cat([self.residues, new_res])
 
-        # Convert z to polar coordinates for TBU dynamics
         r0 = max(abs(z), 0.05)
         theta0 = np.angle(z)
         new_tbu = torch.tensor([[r0, vr0, theta0, l0]], dtype=torch.float32, device=device)
         self.tbu_states = torch.cat([self.tbu_states, new_tbu])
+
+    def spawn_benchmark_cluster(self, count: int = 1000):
+        """Spawns N particles in CUDA memory for stress-testing GPU computation."""
+        angles = np.random.uniform(0, 2 * np.pi, count)
+        radii = np.random.uniform(0.3, 3.5, count)
+        z_pts = radii * np.exp(1j * angles)
+
+        res_pts = np.random.choice([-1.0, 1.0, 0.5, -0.5], count) + 1j * np.random.choice([0.0, 0.25, -0.25], count)
+        vrs = np.random.uniform(-0.3, -0.05, count)
+        ls = np.random.choice([0.1, 0.2, 0.3, 0.7], count)
+
+        self.positions = torch.tensor(z_pts, dtype=torch.complex64, device=device)
+        self.residues = torch.tensor(res_pts, dtype=torch.complex64, device=device)
+
+        tbu_arr = np.column_stack([radii, vrs, angles, ls])
+        self.tbu_states = torch.tensor(tbu_arr, dtype=torch.float32, device=device)
 
     def update_vortex_physics(self, bounds: tuple[float, float, float, float], dt: float):
         """Standard Complex Potential Vortex Dynamics."""
@@ -138,7 +152,7 @@ class ParticleManagerGPU:
         self.positions = torch.complex(re, im)
 
     def update_tbu_keplerian_physics(self, dt: float):
-        """TBU Section 4 Keplerian Tarpit Non-Hermitian ODE Dynamics."""
+        """TBU Keplerian Tarpit Non-Hermitian ODE Dynamics."""
         N = self.tbu_states.shape[0]
         if N == 0:
             return
@@ -150,16 +164,14 @@ class ParticleManagerGPU:
             ds_dr = dS_dr(r_val)
             b_val = B_delta(r_val)
 
-            # Enhanced dissipative containment force
             radial_force = -ds_dr * (1.0 + K_TBU * (1.0 - b_val))
             centrifugal_force = (l**2) / (r_val**3)
 
-            # Euler-Cromer integration
             vr += (radial_force + centrifugal_force) * dt
             r += vr * dt
             theta += (l / (r_val**2)) * dt
 
-            r = max(r, 0.02)  # Core collision bound
+            r = max(r, 0.02)
             z_new = complex(r * np.cos(theta), r * np.sin(theta))
 
             self.tbu_states[i, 0] = r
@@ -216,9 +228,10 @@ particles_gpu.add_particle(complex(-1.5, -1.0), 0.5 + 0.5j, vr0=-0.1, l0=0.3)
 particles_gpu.add_particle(complex(0.5, 2.0), -1.0 + 0.0j, vr0=-0.3, l0=0.15)
 
 contour = ContourPolygon()
-font = pygame.font.SysFont("Consolas", 15)
+font = pygame.font.SysFont("Consolas", 14)
+font_bold = pygame.font.SysFont("Consolas", 15, bold=True)
 
-# Initialize default circular contour loop
+# Default circular contour loop
 default_center = 0.0 + 0.0j
 default_radius = 2.0
 for angle in np.linspace(0, 2 * np.pi, 60, endpoint=False):
@@ -233,6 +246,7 @@ tbu_kepler_mode = False
 sphere_rotation_angle = 0.0
 
 while running:
+    step_start_time = time.perf_counter()
     dt = clock.tick(60) / 1000.0
     screen.fill(BG_COLOR)
     sphere_rotation_angle += dt * 0.5
@@ -263,11 +277,14 @@ while running:
                     joukowski_mode = False
                     tbu_kepler_mode = False
 
+            elif event.key == pygame.K_b:  # Trigger Benchmark Cluster
+                particles_gpu.spawn_benchmark_cluster(1000)
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_z = screen_to_complex(*event.pos)
             if event.button == 1:
                 rand_res = complex(np.random.choice([-1.0, 1.0, 0.5]), np.random.choice([0.0, 0.5, -0.5]))
-                rand_l = float(np.random.choice([0.15, 0.25, 0.35, 0.7]))  # l <= 0.3 captures, l >= 0.7 escapes
+                rand_l = float(np.random.choice([0.15, 0.25, 0.35, 0.7]))
                 particles_gpu.add_particle(mouse_z, rand_res, vr0=-0.2, l0=rand_l)
 
             elif event.button == 3:
@@ -305,7 +322,6 @@ while running:
 
     contour_integral = 2 * np.pi * 1j * sum_residues
 
-    # Coordinate mapping helper
     def map_to_screen(z: complex) -> tuple[int, int]:
         if riemann_mode:
             return project_to_riemann_sphere(z, sphere_rotation_angle)
@@ -316,11 +332,9 @@ while running:
 
     # --- Rendering ---
     if riemann_mode:
-        # 3D Riemann Wireframe
         pygame.draw.circle(screen, SPHERE_WIRE_COLOR, (CENTER_X, CENTER_Y), 180, 1)
         pygame.draw.ellipse(screen, SPHERE_WIRE_COLOR, (CENTER_X - 180, CENTER_Y - 50, 360, 100), 1)
     else:
-        # Axes & Grid
         for x in range(0, WIDTH, int(SCALE)):
             pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
         for y in range(0, HEIGHT, int(SCALE)):
@@ -329,13 +343,12 @@ while running:
         pygame.draw.line(screen, AXIS_COLOR, (CENTER_X, 0), (CENTER_X, HEIGHT), 2)
         pygame.draw.line(screen, AXIS_COLOR, (0, CENTER_Y), (WIDTH, CENTER_Y), 2)
 
-        # If in TBU mode, render the critical horizon circle r_h
         if tbu_kepler_mode:
             horizon_px_radius = int(R_HORIZON * SCALE)
             pygame.draw.circle(screen, HORIZON_COLOR, (CENTER_X, CENTER_Y), horizon_px_radius, 2)
 
-        # Vector Field Line Grid
-        GRID_STEP = 30
+        # Render Vector Field Line Grid
+        GRID_STEP = 35
         for gx in range(0, WIDTH, GRID_STEP):
             for gy in range(0, HEIGHT, GRID_STEP):
                 gz = screen_to_complex(gx, gy)
@@ -353,7 +366,7 @@ while running:
 
                 mag = abs(v_z)
                 if mag > 1e-4:
-                    direction = (v_z / mag) * min(mag * 5.0, 15.0)
+                    direction = (v_z / mag) * min(mag * 5.0, 12.0)
                     start_px, start_py = map_to_screen(gz)
                     end_px = start_px + int(direction.real)
                     end_py = start_py - int(direction.imag)
@@ -378,36 +391,67 @@ while running:
 
         if tbu_kepler_mode:
             color = TBU_PARTICLE_COLOR
-            l_val = cpu_tbu_states[i, 3] if i < len(cpu_tbu_states) else 0.25
-            info_txt = f"l={l_val:.2f}"
+            r_size = 4 if len(cpu_positions) > 100 else 7
         else:
             is_inside = contour.contains(z_comp)
             color = INSIDE_PARTICLE if is_inside else OUTSIDE_PARTICLE
-            res_comp = complex(res)
-            info_txt = f"{res_comp.real:+.1f}{res_comp.imag:+.1f}i"
+            r_size = 4 if len(cpu_positions) > 100 else 7
 
-        pygame.draw.circle(screen, color, (px, py), 8)
-        lbl = font.render(info_txt, True, (170, 180, 200))
-        screen.blit(lbl, (px + 10, py - 10))
+        pygame.draw.circle(screen, color, (px, py), r_size)
 
-    # HUD Overlay
+        if len(cpu_positions) <= 15:
+            if tbu_kepler_mode:
+                l_val = cpu_tbu_states[i, 3] if i < len(cpu_tbu_states) else 0.25
+                info_txt = f"l={l_val:.2f}"
+            else:
+                res_comp = complex(res)
+                info_txt = f"{res_comp.real:+.1f}{res_comp.imag:+.1f}i"
+            lbl = font.render(info_txt, True, (170, 180, 200))
+            screen.blit(lbl, (px + 8, py - 8))
+
+    # --- Metrics & HUD Calculation ---
+    step_time_ms = (time.perf_counter() - step_start_time) * 1000.0
+    current_fps = clock.get_fps()
+
+    # Query CUDA VRAM if on GPU
+    if device.type == "cuda":
+        vram_allocated = torch.cuda.memory_allocated() / (1024**2)  # MB
+        vram_reserved = torch.cuda.memory_reserved() / (1024**2)    # MB
+        gpu_str = f"GPU Memory: {vram_allocated:.1f} MB (Alloc) / {vram_reserved:.1f} MB (Res)"
+    else:
+        gpu_str = "Compute Device: CPU (Fallback)"
+
     mode_str = (
         "TBU KEPLERIAN TARPIT CAPTURE"
         if tbu_kepler_mode
         else ("3D RIEMANN SPHERE" if riemann_mode else ("JOUKOWSKI AIRFOIL" if joukowski_mode else "STANDARD COMPLEX PLANE"))
     )
 
+    # --- Top Left HUD Panel ---
     hud_data = [
-        f"Device: {str(device).upper()}  |  Mode: {mode_str}",
-        f"Sum of Residues (∑ Res): {sum_residues.real:+.2f} {sum_residues.imag:+.2f}i",
-        f"Contour Integral (2πi * ∑ Res): {contour_integral.real:+.2f} {contour_integral.imag:+.2f}i",
-        "[K] Toggle Keplerian Tarpit  |  [J] Toggle Airfoil  |  [S] Toggle 3D Riemann",
+        f"ENGINE MODE: {mode_str}",
+        f"∑ Res Inside: {sum_residues.real:+.2f} {sum_residues.imag:+.2f}i  |  Integral: {contour_integral.real:+.2f} {contour_integral.imag:+.2f}i",
+        "[K] TBU Tarpit  |  [J] Airfoil  |  [S] 3D Riemann  |  [B] Benchmark (1000 Particles)",
     ]
 
     for idx, text_str in enumerate(hud_data):
-        col = (255, 200, 80) if idx == 0 and tbu_kepler_mode else ((100, 210, 255) if idx == 2 else (TEXT_COLOR if idx < 3 else (140, 150, 170)))
+        col = (255, 200, 80) if idx == 0 and tbu_kepler_mode else (TEXT_COLOR if idx < 2 else (140, 150, 170))
         txt_surface = font.render(text_str, True, col)
-        screen.blit(txt_surface, (20, 20 + idx * 24))
+        screen.blit(txt_surface, (20, 20 + idx * 22))
+
+    # --- Top Right CUDA Benchmark Overlay Panel ---
+    bench_data = [
+        f"HARDWARE: {str(device).upper()}",
+        f"PERFORMANCE: {current_fps:.1f} FPS ({step_time_ms:.2f} ms/frame)",
+        f"PARTICLE COUNT: {len(cpu_positions)} Active Tensors",
+        gpu_str,
+    ]
+
+    for idx, text_str in enumerate(bench_data):
+        col = BENCHMARK_COLOR if idx == 1 else (180, 190, 210)
+        txt_surface = font_bold.render(text_str, True, col)
+        rect = txt_surface.get_rect(topright=(WIDTH - 20, 20 + idx * 22))
+        screen.blit(txt_surface, rect)
 
     pygame.display.flip()
 
