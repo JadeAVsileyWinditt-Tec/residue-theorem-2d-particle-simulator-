@@ -9,7 +9,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pygame.init()
 WIDTH, HEIGHT = 900, 700
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("NVIDIA CUDA 2D Complex Physics - Joukowski Airfoil Mode")
+pygame.display.set_caption("NVIDIA CUDA 2D Complex Physics - Riemann Sphere & Airfoil")
 clock = pygame.time.Clock()
 
 # Color Palette
@@ -21,16 +21,37 @@ TEXT_COLOR = (240, 240, 245)
 GRID_COLOR = (28, 36, 48)
 AXIS_COLOR = (60, 75, 95)
 AIRFOIL_COLOR = (255, 180, 50)
+SPHERE_WIRE_COLOR = (50, 70, 100)
 
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 SCALE = 80.0
 
 
+# --- Transformation Functions ---
 def joukowski_transform(z: complex, c: float = 1.0) -> complex:
     """Conformal mapping: w = z + c^2 / z."""
     if abs(z) < 1e-4:
         return z
     return z + (c**2) / z
+
+
+def project_to_riemann_sphere(z: complex, angle_y: float) -> tuple[int, int]:
+    """Projects 2D complex point z onto a rotating 3D Riemann sphere surface."""
+    x, y = z.real, z.imag
+    denom = x**2 + y**2 + 1.0
+
+    R = 180.0  # Sphere radius in pixels
+    X = (2.0 * x) / denom
+    Y = (2.0 * y) / denom
+    Z = (x**2 + y**2 - 1.0) / denom
+
+    # Apply 3D Y-axis rotation for interactive perspective
+    cos_a, sin_a = np.cos(angle_y), np.sin(angle_y)
+    X_rot = X * cos_a + Z * sin_a
+
+    screen_x = int(CENTER_X + X_rot * R)
+    screen_y = int(CENTER_Y - Y * R)
+    return screen_x, screen_y
 
 
 def screen_to_complex(x: int, y: int) -> complex:
@@ -121,7 +142,7 @@ class ContourPolygon:
 # --- Setup Simulation Objects ---
 particles_gpu = ParticleManagerGPU()
 
-# Default vortices setup around an offset center
+# Default vortices
 particles_gpu.add_particle(complex(-0.1, 0.1), 1.5 + 0.0j)
 particles_gpu.add_particle(complex(1.5, -1.0), 0.5 + 0.5j)
 particles_gpu.add_particle(complex(-1.5, 1.2), -1.0 + 0.0j)
@@ -129,7 +150,7 @@ particles_gpu.add_particle(complex(-1.5, 1.2), -1.0 + 0.0j)
 contour = ContourPolygon()
 font = pygame.font.SysFont("Consolas", 15)
 
-# Initialize default circular contour loop (offset to generate an aerodynamic camber)
+# Initialize default circular contour loop
 default_center = -0.15 + 0.15j
 default_radius = 1.15
 for angle in np.linspace(0, 2 * np.pi, 60, endpoint=False):
@@ -138,11 +159,14 @@ contour.close()
 
 running = True
 drawing_contour = False
-joukowski_mode = False  # Toggle for Conformal Mapping
+joukowski_mode = False
+riemann_mode = False
+sphere_rotation_angle = 0.0
 
 while running:
     dt = clock.tick(60) / 1000.0
     screen.fill(BG_COLOR)
+    sphere_rotation_angle += dt * 0.5  # Slowly rotate sphere in 3D
 
     bounds = (-CENTER_X / SCALE, CENTER_X / SCALE, -CENTER_Y / SCALE, CENTER_Y / SCALE)
 
@@ -152,8 +176,14 @@ while running:
             running = False
 
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_j:  # Toggle Joukowski Airfoil Conformal Map
+            if event.key == pygame.K_j:  # Toggle Joukowski Airfoil Mode
                 joukowski_mode = not joukowski_mode
+                if joukowski_mode:
+                    riemann_mode = False
+            elif event.key == pygame.K_s:  # Toggle 3D Riemann Sphere Mode
+                riemann_mode = not riemann_mode
+                if riemann_mode:
+                    joukowski_mode = False
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_z = screen_to_complex(*event.pos)
@@ -195,47 +225,60 @@ while running:
 
     contour_integral = 2 * np.pi * 1j * sum_residues
 
-    # Helper mapping depending on mode
-    def map_z(z: complex) -> complex:
-        return joukowski_transform(z) if joukowski_mode else z
+    # Dynamic Screen Coordinate Conversion
+    def map_to_screen(z: complex) -> tuple[int, int]:
+        if riemann_mode:
+            return project_to_riemann_sphere(z, sphere_rotation_angle)
+        elif joukowski_mode:
+            return complex_to_screen(joukowski_transform(z))
+        else:
+            return complex_to_screen(z)
 
     # --- Rendering ---
-    # 1. Grid & Axes
-    for x in range(0, WIDTH, int(SCALE)):
-        pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
-    for y in range(0, HEIGHT, int(SCALE)):
-        pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
+    if riemann_mode:
+        # Draw 3D Riemann Sphere Wireframe Atmosphere
+        pygame.draw.circle(screen, SPHERE_WIRE_COLOR, (CENTER_X, CENTER_Y), 180, 1)
+        pygame.draw.ellipse(screen, SPHERE_WIRE_COLOR, (CENTER_X - 180, CENTER_Y - 50, 360, 100), 1)
+        # North / South pole markers
+        north_px, north_py = project_to_riemann_sphere(1000.0 + 0j, sphere_rotation_angle)
+        south_px, south_py = project_to_riemann_sphere(0.0 + 0j, sphere_rotation_angle)
+        pygame.draw.circle(screen, (255, 255, 255), (north_px, north_py), 4)
+        pygame.draw.circle(screen, (255, 255, 0), (south_px, south_py), 4)
+    else:
+        # 1. Standard Grid & Axes
+        for x in range(0, WIDTH, int(SCALE)):
+            pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
+        for y in range(0, HEIGHT, int(SCALE)):
+            pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
 
-    pygame.draw.line(screen, AXIS_COLOR, (CENTER_X, 0), (CENTER_X, HEIGHT), 2)
-    pygame.draw.line(screen, AXIS_COLOR, (0, CENTER_Y), (WIDTH, CENTER_Y), 2)
+        pygame.draw.line(screen, AXIS_COLOR, (CENTER_X, 0), (CENTER_X, HEIGHT), 2)
+        pygame.draw.line(screen, AXIS_COLOR, (0, CENTER_Y), (WIDTH, CENTER_Y), 2)
 
-    # 2. Vector Field Line Grid
-    GRID_STEP = 30
-    for gx in range(0, WIDTH, GRID_STEP):
-        for gy in range(0, HEIGHT, GRID_STEP):
-            gz = screen_to_complex(gx, gy)
-            v_z = 0.0 + 0.0j
-            for z, res in zip(cpu_positions, cpu_residues):
-                diff = gz - complex(z)
-                if abs(diff) > 0.15:
-                    v_z += complex(res) / diff
+        # 2. Vector Field Line Grid
+        GRID_STEP = 30
+        for gx in range(0, WIDTH, GRID_STEP):
+            for gy in range(0, HEIGHT, GRID_STEP):
+                gz = screen_to_complex(gx, gy)
+                v_z = 0.0 + 0.0j
+                for z, res in zip(cpu_positions, cpu_residues):
+                    diff = gz - complex(z)
+                    if abs(diff) > 0.15:
+                        v_z += complex(res) / diff
 
-            mag = abs(v_z)
-            if mag > 1e-4:
-                direction = (v_z / mag) * min(mag * 5.0, 15.0)
-                mapped_start = map_z(gz)
-                start_px, start_py = complex_to_screen(mapped_start)
-                end_px = start_px + int(direction.real)
-                end_py = start_py - int(direction.imag)
+                mag = abs(v_z)
+                if mag > 1e-4:
+                    direction = (v_z / mag) * min(mag * 5.0, 15.0)
+                    start_px, start_py = map_to_screen(gz)
+                    end_px = start_px + int(direction.real)
+                    end_py = start_py - int(direction.imag)
 
-                alpha_col = min(int(mag * 50), 120)
-                field_color = (0, alpha_col + 50, alpha_col + 100)
-                pygame.draw.line(screen, field_color, (start_px, start_py), (end_px, end_py), 1)
+                    alpha_col = min(int(mag * 50), 120)
+                    field_color = (0, alpha_col + 50, alpha_col + 100)
+                    pygame.draw.line(screen, field_color, (start_px, start_py), (end_px, end_py), 1)
 
-    # 3. Contour Polygon C (Draws as Airfoil when Joukowski Mode is ON)
+    # 3. Contour Polygon C
     if len(contour.points) >= 2:
-        mapped_pts = [map_z(z) for z in contour.points]
-        screen_pts = [complex_to_screen(z) for z in mapped_pts]
+        screen_pts = [map_to_screen(z) for z in contour.points]
         c_color = AIRFOIL_COLOR if joukowski_mode else CONTOUR_COLOR
         if contour.is_closed:
             pygame.draw.polygon(screen, c_color, screen_pts, 2)
@@ -246,8 +289,7 @@ while running:
     for z, res in zip(cpu_positions, cpu_residues):
         z_comp = complex(z)
         res_comp = complex(res)
-        mapped_z = map_z(z_comp)
-        px, py = complex_to_screen(mapped_z)
+        px, py = map_to_screen(z_comp)
         is_inside = contour.contains(z_comp)
         color = INSIDE_PARTICLE if is_inside else OUTSIDE_PARTICLE
 
@@ -257,16 +299,16 @@ while running:
         screen.blit(lbl, (px + 10, py - 10))
 
     # 5. HUD Dashboard
-    mode_str = "JOUKOWSKI AIRFOIL PLANE" if joukowski_mode else "STANDARD COMPLEX PLANE"
+    mode_str = "3D RIEMANN SPHERE" if riemann_mode else ("JOUKOWSKI AIRFOIL" if joukowski_mode else "STANDARD COMPLEX PLANE")
     hud_data = [
-        f"Device: {str(device).upper()}  |  Mode: {mode_str} (Press 'J' to Toggle)",
+        f"Device: {str(device).upper()}  |  Mode: {mode_str}",
         f"Sum of Residues (∑ Res): {sum_residues.real:+.2f} {sum_residues.imag:+.2f}i",
         f"Contour Integral (2πi * ∑ Res): {contour_integral.real:+.2f} {contour_integral.imag:+.2f}i",
-        "[Left-Click] Add Pole  |  [Right-Click + Drag] Draw Contour  |  [J] Toggle Airfoil",
+        "[J] Toggle Airfoil  |  [S] Toggle 3D Riemann Sphere",
     ]
 
     for idx, text_str in enumerate(hud_data):
-        col = (255, 180, 50) if idx == 0 and joukowski_mode else ((100, 210, 255) if idx == 2 else (TEXT_COLOR if idx < 3 else (140, 150, 170)))
+        col = (100, 210, 255) if idx == 2 else (TEXT_COLOR if idx < 3 else (140, 150, 170))
         txt_surface = font.render(text_str, True, col)
         screen.blit(txt_surface, (20, 20 + idx * 24))
 
