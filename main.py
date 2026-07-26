@@ -4,13 +4,12 @@ import torch
 
 # Select NVIDIA CUDA GPU if available, else CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Running simulation on device: {device}")
 
 # --- Initialize Pygame ---
 pygame.init()
 WIDTH, HEIGHT = 900, 700
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("NVIDIA CUDA-Accelerated 2D Complex Particle Simulator")
+pygame.display.set_caption("NVIDIA CUDA 2D Complex Physics - Joukowski Airfoil Mode")
 clock = pygame.time.Clock()
 
 # Color Palette
@@ -21,9 +20,17 @@ OUTSIDE_PARTICLE = (100, 116, 139)
 TEXT_COLOR = (240, 240, 245)
 GRID_COLOR = (28, 36, 48)
 AXIS_COLOR = (60, 75, 95)
+AIRFOIL_COLOR = (255, 180, 50)
 
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 SCALE = 80.0
+
+
+def joukowski_transform(z: complex, c: float = 1.0) -> complex:
+    """Conformal mapping: w = z + c^2 / z."""
+    if abs(z) < 1e-4:
+        return z
+    return z + (c**2) / z
 
 
 def screen_to_complex(x: int, y: int) -> complex:
@@ -35,7 +42,7 @@ def complex_to_screen(z: complex) -> tuple[int, int]:
 
 
 class ParticleManagerGPU:
-    """Handles point-vortex GPU physics tensors for high-performance N-body calculations."""
+    """Handles point-vortex GPU physics tensors."""
 
     def __init__(self):
         self.positions = torch.empty((0,), dtype=torch.complex64, device=device)
@@ -52,26 +59,19 @@ class ParticleManagerGPU:
         if N <= 1:
             return
 
-        # Vectorized N-body distance matrix on GPU: diff[i, j] = z_i - z_j
-        z_col = self.positions.unsqueeze(1)  # Shape (N, 1)
-        z_row = self.positions.unsqueeze(0)  # Shape (1, N)
-        diff = z_col - z_row                 # Shape (N, N)
+        z_col = self.positions.unsqueeze(1)
+        z_row = self.positions.unsqueeze(0)
+        diff = z_col - z_row
 
-        # Mask self-interaction to avoid division by zero
         dist = torch.abs(diff)
         mask = (dist > 0.1).float()
-        
-        # Calculate velocity matrix: v_ij = (i / 2pi) * (Res_j / diff_ij*)
+
         v_matrix = (1j / (2 * np.pi)) * (self.residues.unsqueeze(0) / torch.conj(diff + 1e-6))
         v_matrix = v_matrix * mask
 
-        # Sum velocities across all interaction pairs
         v_induced = torch.sum(v_matrix, dim=1)
-
-        # Step forward in time: z += v * dt
         self.positions += v_induced * dt
 
-        # Boundary box confinement on GPU
         min_re, max_re, min_im, max_im = bounds
         padding = 0.2
         re = torch.clamp(self.positions.real, min_re + padding, max_re - padding)
@@ -121,23 +121,24 @@ class ContourPolygon:
 # --- Setup Simulation Objects ---
 particles_gpu = ParticleManagerGPU()
 
-# Default particles
-particles_gpu.add_particle(complex(-1.5, 1.2), 1.0 + 0.0j)
-particles_gpu.add_particle(complex(1.2, -1.0), 0.5 + 0.5j)
-particles_gpu.add_particle(complex(0.2, 0.5), -1.0 + 0.0j)
+# Default vortices setup around an offset center
+particles_gpu.add_particle(complex(-0.1, 0.1), 1.5 + 0.0j)
+particles_gpu.add_particle(complex(1.5, -1.0), 0.5 + 0.5j)
+particles_gpu.add_particle(complex(-1.5, 1.2), -1.0 + 0.0j)
 
 contour = ContourPolygon()
 font = pygame.font.SysFont("Consolas", 15)
 
-# Initialize default circular contour loop
-default_center = 0 + 0j
-default_radius = 2.2
-for angle in np.linspace(0, 2 * np.pi, 30, endpoint=False):
+# Initialize default circular contour loop (offset to generate an aerodynamic camber)
+default_center = -0.15 + 0.15j
+default_radius = 1.15
+for angle in np.linspace(0, 2 * np.pi, 60, endpoint=False):
     contour.add_point(default_center + default_radius * np.exp(1j * angle))
 contour.close()
 
 running = True
 drawing_contour = False
+joukowski_mode = False  # Toggle for Conformal Mapping
 
 while running:
     dt = clock.tick(60) / 1000.0
@@ -150,16 +151,20 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_j:  # Toggle Joukowski Airfoil Conformal Map
+                joukowski_mode = not joukowski_mode
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_z = screen_to_complex(*event.pos)
-            if event.button == 1:  # Left Click: Spawn Particle
+            if event.button == 1:
                 rand_res = complex(
                     np.random.choice([-1.0, 1.0, 0.5]),
                     np.random.choice([0.0, 0.5, -0.5]),
                 )
                 particles_gpu.add_particle(mouse_z, rand_res)
 
-            elif event.button == 3:  # Right Click: Draw Contour
+            elif event.button == 3:
                 contour.clear()
                 contour.add_point(mouse_z)
                 drawing_contour = True
@@ -177,7 +182,6 @@ while running:
     # --- GPU Physics Update ---
     particles_gpu.update_physics(bounds, dt)
 
-    # Transfer GPU results to CPU for rendering & residue summation
     cpu_positions = particles_gpu.positions.cpu().numpy()
     cpu_residues = particles_gpu.residues.cpu().numpy()
 
@@ -190,6 +194,10 @@ while running:
             inside_count += 1
 
     contour_integral = 2 * np.pi * 1j * sum_residues
+
+    # Helper mapping depending on mode
+    def map_z(z: complex) -> complex:
+        return joukowski_transform(z) if joukowski_mode else z
 
     # --- Rendering ---
     # 1. Grid & Axes
@@ -215,25 +223,31 @@ while running:
             mag = abs(v_z)
             if mag > 1e-4:
                 direction = (v_z / mag) * min(mag * 5.0, 15.0)
-                end_x = gx + int(direction.real)
-                end_y = gy - int(direction.imag)
+                mapped_start = map_z(gz)
+                start_px, start_py = complex_to_screen(mapped_start)
+                end_px = start_px + int(direction.real)
+                end_py = start_py - int(direction.imag)
+
                 alpha_col = min(int(mag * 50), 120)
                 field_color = (0, alpha_col + 50, alpha_col + 100)
-                pygame.draw.line(screen, field_color, (gx, gy), (end_x, end_y), 1)
+                pygame.draw.line(screen, field_color, (start_px, start_py), (end_px, end_py), 1)
 
-    # 3. Contour Polygon C
+    # 3. Contour Polygon C (Draws as Airfoil when Joukowski Mode is ON)
     if len(contour.points) >= 2:
-        screen_pts = [complex_to_screen(z) for z in contour.points]
+        mapped_pts = [map_z(z) for z in contour.points]
+        screen_pts = [complex_to_screen(z) for z in mapped_pts]
+        c_color = AIRFOIL_COLOR if joukowski_mode else CONTOUR_COLOR
         if contour.is_closed:
-            pygame.draw.polygon(screen, CONTOUR_COLOR, screen_pts, 2)
+            pygame.draw.polygon(screen, c_color, screen_pts, 2)
         else:
-            pygame.draw.lines(screen, CONTOUR_COLOR, False, screen_pts, 2)
+            pygame.draw.lines(screen, c_color, False, screen_pts, 2)
 
     # 4. Particles
     for z, res in zip(cpu_positions, cpu_residues):
         z_comp = complex(z)
         res_comp = complex(res)
-        px, py = complex_to_screen(z_comp)
+        mapped_z = map_z(z_comp)
+        px, py = complex_to_screen(mapped_z)
         is_inside = contour.contains(z_comp)
         color = INSIDE_PARTICLE if is_inside else OUTSIDE_PARTICLE
 
@@ -243,15 +257,16 @@ while running:
         screen.blit(lbl, (px + 10, py - 10))
 
     # 5. HUD Dashboard
+    mode_str = "JOUKOWSKI AIRFOIL PLANE" if joukowski_mode else "STANDARD COMPLEX PLANE"
     hud_data = [
-        f"Device: {str(device).upper()}  |  Poles: {len(cpu_positions)}  |  Inside: {inside_count}",
+        f"Device: {str(device).upper()}  |  Mode: {mode_str} (Press 'J' to Toggle)",
         f"Sum of Residues (∑ Res): {sum_residues.real:+.2f} {sum_residues.imag:+.2f}i",
         f"Contour Integral (2πi * ∑ Res): {contour_integral.real:+.2f} {contour_integral.imag:+.2f}i",
-        "[Left-Click] Add Pole  |  [Right-Click + Drag] Draw Closed Contour",
+        "[Left-Click] Add Pole  |  [Right-Click + Drag] Draw Contour  |  [J] Toggle Airfoil",
     ]
 
     for idx, text_str in enumerate(hud_data):
-        col = (100, 210, 255) if idx == 2 else (TEXT_COLOR if idx < 3 else (140, 150, 170))
+        col = (255, 180, 50) if idx == 0 and joukowski_mode else ((100, 210, 255) if idx == 2 else (TEXT_COLOR if idx < 3 else (140, 150, 170)))
         txt_surface = font.render(text_str, True, col)
         screen.blit(txt_surface, (20, 20 + idx * 24))
 
