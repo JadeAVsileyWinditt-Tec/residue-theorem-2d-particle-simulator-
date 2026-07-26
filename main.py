@@ -10,7 +10,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pygame.init()
 WIDTH, HEIGHT = 900, 700
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("NVIDIA CUDA Physics Engine - Higher-Order Poles (TBU)")
+pygame.display.set_caption("NVIDIA CUDA Physics Engine - Higher-Order Poles & Discrepancy Counter")
 clock = pygame.time.Clock()
 
 # Color Palette
@@ -28,15 +28,16 @@ AIRFOIL_COLOR = (255, 180, 50)
 SPHERE_WIRE_COLOR = (50, 70, 100)
 HORIZON_COLOR = (255, 80, 80)
 BENCHMARK_COLOR = (0, 255, 200)
+ERROR_COLOR = (255, 120, 120)
 
 CENTER_X, CENTER_Y = WIDTH // 2, HEIGHT // 2
 SCALE = 80.0
 
 # --- TBU Framework Parameters ---
-EPS_TBU = 0.05       # Soft-core parameter
-DELTA_TBU = 0.08     # Boundary layer thickness
-K_TBU = 4.0          # Dissipative containment strength
-R_HORIZON = EPS_TBU  # Critical horizon radius
+EPS_TBU = 0.05
+DELTA_TBU = 0.08
+K_TBU = 4.0
+R_HORIZON = EPS_TBU
 
 
 # --- Mathematical Helper Functions ---
@@ -66,18 +67,13 @@ def joukowski_transform(z: complex, c: float = 1.0) -> complex:
 def project_to_riemann_sphere(z: complex, angle_y: float) -> tuple[int, int]:
     x, y = z.real, z.imag
     denom = x**2 + y**2 + 1.0
-
     R = 180.0
     X = (2.0 * x) / denom
     Y = (2.0 * y) / denom
     Z = (x**2 + y**2 - 1.0) / denom
-
     cos_a, sin_a = np.cos(angle_y), np.sin(angle_y)
     X_rot = X * cos_a + Z * sin_a
-
-    screen_x = int(CENTER_X + X_rot * R)
-    screen_y = int(CENTER_Y - Y * R)
-    return screen_x, screen_y
+    return int(CENTER_X + X_rot * R), int(CENTER_Y - Y * R)
 
 
 def screen_to_complex(x: int, y: int) -> complex:
@@ -94,7 +90,7 @@ class ParticleManagerGPU:
     def __init__(self):
         self.positions = torch.empty((0,), dtype=torch.complex64, device=device)
         self.residues = torch.empty((0,), dtype=torch.complex64, device=device)
-        self.pole_orders = torch.empty((0,), dtype=torch.int32, device=device)  # 1=Monopole, 2=Dipole, 3=Quadrupole
+        self.pole_orders = torch.empty((0,), dtype=torch.int32, device=device)
         self.tbu_states = torch.empty((0, 4), dtype=torch.float32, device=device)
 
     def add_particle(self, z: complex, residue: complex, pole_order: int = 1, vr0: float = -0.1, l0: float = 0.25):
@@ -112,13 +108,12 @@ class ParticleManagerGPU:
         self.tbu_states = torch.cat([self.tbu_states, new_tbu])
 
     def spawn_benchmark_cluster(self, count: int = 1000):
-        """Spawns N particles with mixed higher-order poles in CUDA memory."""
         angles = np.random.uniform(0, 2 * np.pi, count)
         radii = np.random.uniform(0.3, 3.5, count)
         z_pts = radii * np.exp(1j * angles)
 
         res_pts = np.random.choice([-1.0, 1.0, 0.5, -0.5], count) + 1j * np.random.choice([0.0, 0.25, -0.25], count)
-        orders = np.random.choice([1, 2, 3], count, p=[0.6, 0.25, 0.15])
+        orders = np.random.choice([1, 2, 3], count, p=[0.7, 0.2, 0.1])
         vrs = np.random.uniform(-0.3, -0.05, count)
         ls = np.random.choice([0.1, 0.2, 0.3, 0.7], count)
 
@@ -130,7 +125,6 @@ class ParticleManagerGPU:
         self.tbu_states = torch.tensor(tbu_arr, dtype=torch.float32, device=device)
 
     def update_vortex_physics(self, bounds: tuple[float, float, float, float], dt: float):
-        """Vectorized PyTorch field calculation supporting Monopoles, Dipoles, and Quadrupoles."""
         N = self.positions.shape[0]
         if N <= 1:
             return
@@ -142,8 +136,7 @@ class ParticleManagerGPU:
         dist = torch.abs(diff)
         mask = (dist > 0.1).float()
 
-        # Compute higher-order tensor terms: 1/dz^1 (Monopole), 1/dz^2 (Dipole), 1/dz^3 (Quadrupole)
-        orders_row = self.pole_orders.unsqueeze(0)  # Shape (1, N)
+        orders_row = self.pole_orders.unsqueeze(0)
         denom = torch.pow(torch.conj(diff + 1e-6), orders_row)
 
         v_matrix = (1j / (2 * np.pi)) * (self.residues.unsqueeze(0) / denom)
@@ -165,7 +158,6 @@ class ParticleManagerGPU:
 
         for i in range(N):
             r, vr, theta, l = self.tbu_states[i].cpu().numpy()
-
             r_val = max(r, 0.02)
             ds_dr = dS_dr(r_val)
             b_val = B_delta(r_val)
@@ -226,10 +218,9 @@ class ContourPolygon:
 # --- Setup Simulation Objects ---
 particles_gpu = ParticleManagerGPU()
 
-# Default initial poles
 particles_gpu.add_particle(complex(1.8, 1.2), 1.0 + 0.0j, pole_order=1, vr0=-0.2, l0=0.25)
-particles_gpu.add_particle(complex(-1.5, -1.0), 0.8 + 0.0j, pole_order=2, vr0=-0.1, l0=0.3)   # Dipole
-particles_gpu.add_particle(complex(0.5, 2.0), -1.2 + 0.0j, pole_order=3, vr0=-0.3, l0=0.15)   # Quadrupole
+particles_gpu.add_particle(complex(-1.5, -1.0), 0.8 + 0.0j, pole_order=2, vr0=-0.1, l0=0.3)
+particles_gpu.add_particle(complex(0.5, 2.0), -1.2 + 0.0j, pole_order=3, vr0=-0.3, l0=0.15)
 
 contour = ContourPolygon()
 font = pygame.font.SysFont("Consolas", 14)
@@ -247,7 +238,7 @@ drawing_contour = False
 joukowski_mode = False
 riemann_mode = False
 tbu_kepler_mode = False
-active_pole_order = 1  # Default placing order (1=Monopole, 2=Dipole, 3=Quadrupole)
+active_pole_order = 1
 sphere_rotation_angle = 0.0
 
 while running:
@@ -258,7 +249,6 @@ while running:
 
     bounds = (-CENTER_X / SCALE, CENTER_X / SCALE, -CENTER_Y / SCALE, CENTER_Y / SCALE)
 
-    # --- Event Handling ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -325,12 +315,34 @@ while running:
     cpu_orders = particles_gpu.pole_orders.cpu().numpy()
     cpu_tbu_states = particles_gpu.tbu_states.cpu().numpy()
 
+    # --- Mathematical Verification: Residue vs. Discrete Path Integration ---
     sum_residues = 0.0 + 0.0j
     for z, res, order in zip(cpu_positions, cpu_residues, cpu_orders):
-        if order == 1 and contour.contains(complex(z)):  # Residue theorem strictly applies to simple poles
+        if order == 1 and contour.contains(complex(z)):
             sum_residues += complex(res)
 
-    contour_integral = 2 * np.pi * 1j * sum_residues
+    contour_integral_theoretical = 2 * np.pi * 1j * sum_residues
+
+    # Compute discrete path line integral along closed contour C: \oint_C V(z) dz
+    contour_integral_empirical = 0.0 + 0.0j
+    if contour.is_closed and len(contour.points) >= 3:
+        n_pts = len(contour.points)
+        for i in range(n_pts):
+            z_start = contour.points[i]
+            z_end = contour.points[(i + 1) % n_pts]
+            z_mid = 0.5 * (z_start + z_end)
+            dz = z_end - z_start
+
+            # Evaluate complex velocity field potential at midpoint of line segment
+            field_val = 0.0 + 0.0j
+            for z_p, res_p, ord_p in zip(cpu_positions, cpu_residues, cpu_orders):
+                diff = z_mid - complex(z_p)
+                if abs(diff) > 0.05:
+                    field_val += complex(res_p) / (diff ** int(ord_p))
+
+            contour_integral_empirical += field_val * dz
+
+    numerical_discrepancy = abs(contour_integral_theoretical - contour_integral_empirical)
 
     def map_to_screen(z: complex) -> tuple[int, int]:
         if riemann_mode:
@@ -357,7 +369,6 @@ while running:
             horizon_px_radius = int(R_HORIZON * SCALE)
             pygame.draw.circle(screen, HORIZON_COLOR, (CENTER_X, CENTER_Y), horizon_px_radius, 2)
 
-        # Vector Field Grid Sampling
         GRID_STEP = 35
         for gx in range(0, WIDTH, GRID_STEP):
             for gy in range(0, HEIGHT, GRID_STEP):
@@ -394,7 +405,7 @@ while running:
         else:
             pygame.draw.lines(screen, c_color, False, screen_pts, 2)
 
-    # Render Particles (Color Coded by Pole Order)
+    # Render Particles
     for i, (z, res, order) in enumerate(zip(cpu_positions, cpu_residues, cpu_orders)):
         z_comp = complex(z)
         px, py = map_to_screen(z_comp)
@@ -429,12 +440,19 @@ while running:
 
     hud_left = [
         f"ACTIVE SPAWN MODE: {active_order_str} [Keys 1, 2, 3]",
-        f"∑ Res Monopoles: {sum_residues.real:+.2f} {sum_residues.imag:+.2f}i  |  Integral: {contour_integral.real:+.2f} {contour_integral.imag:+.2f}i",
+        f"Theoretical Residue (2πi ∑Res): {contour_integral_theoretical.real:+.2f} {contour_integral_theoretical.imag:+.2f}i",
+        f"Empirical Path Integral (∮ V dz): {contour_integral_empirical.real:+.2f} {contour_integral_empirical.imag:+.2f}i",
+        f"Numerical Discrepancy Error: {numerical_discrepancy:.5f}",
         "[1] Mono | [2] Dipole | [3] Quad | [K] TBU Tarpit | [J] Airfoil | [S] Sphere | [B] Bench",
     ]
 
     for idx, text_str in enumerate(hud_left):
-        col = (0, 200, 255) if idx == 0 else (TEXT_COLOR if idx < 2 else (140, 150, 170))
+        if idx == 0:
+            col = (0, 200, 255)
+        elif idx == 3:
+            col = ERROR_COLOR
+        else:
+            col = TEXT_COLOR if idx < 3 else (140, 150, 170)
         txt_surface = font.render(text_str, True, col)
         screen.blit(txt_surface, (20, 20 + idx * 22))
 
