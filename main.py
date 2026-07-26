@@ -1,26 +1,47 @@
-# --- Add Vector Field Visualization ---
-# Grid setup (compute once outside main loop or keep low res for speed)
-GRID_STEP = 30  # Pixel spacing between field arrows
-for x in range(0, WIDTH, GRID_STEP):
-    for y in range(0, HEIGHT, GRID_STEP):
-        z = screen_to_complex(x, y)
-        
-        # Calculate complex velocity field V(z) = sum(Res_k / (z - z_k))
-        v_z = 0.0 + 0.0j
-        for p in particles:
-            diff = z - p.z
-            if abs(diff) > 0.15:  # Avoid singularity division by zero
-                v_z += p.residue / diff
-        
-        # Normalize and scale arrow length
-        mag = abs(v_z)
-        if mag > 1e-4:
-            # Complex conjugation flips imaginary component back to screen space
-            direction = (v_z / mag) * min(mag * 5.0, 15.0) 
-            end_x = x + int(direction.real)
-            end_y = y - int(direction.imag)  # Screen Y inverted
-            
-            # Fade line color based on field strength
-            alpha_col = min(int(mag * 50), 120)
-            color = (0, alpha_col + 50, alpha_col + 100)
-            pygame.draw.line(screen, color, (x, y), (end_x, end_y), 1)
+class Particle:
+    """Represents a point vortex in 2D fluid flow whose motion is governed
+
+    by the complex potential of surrounding vortices.
+    """
+
+    def __init__(self, z: complex, residue: complex):
+        self.z = z
+        self.residue = residue  # Circulation gamma
+        self.radius = 8
+
+    def compute_vortex_velocity(self, all_particles: list['Particle']) -> complex:
+        # Sum velocity induced by all other vortices: dz_k/dt = (-i / 2pi) * sum(Res_j / (z_k - z_j)^*)
+        v_induced = 0.0 + 0.0j
+        for other in all_particles:
+            if other is self:
+                continue
+            diff = self.z - other.z
+            dist = abs(diff)
+            if dist > 0.1:  # Softening core to avoid infinite velocity
+                # Complex conjugate of 1/(z_k - z_j)
+                v_induced += (1j / (2 * np.pi)) * (other.residue / diff.conjugate())
+
+        return v_induced
+
+    def update(
+        self,
+        all_particles: list['Particle'],
+        bounds: tuple[float, float, float, float],
+        dt: float,
+    ):
+        v = self.compute_vortex_velocity(all_particles)
+        self.z += v * dt
+
+        # Soft boundary box confinement
+        min_re, max_re, min_im, max_im = bounds
+        padding = 0.2
+        if self.z.real < min_re + padding or self.z.real > max_re - padding:
+            self.z = complex(
+                np.clip(self.z.real, min_re + padding, max_re - padding),
+                self.z.imag,
+            )
+        if self.z.imag < min_im + padding or self.z.imag > max_im - padding:
+            self.z = complex(
+                self.z.real,
+                np.clip(self.z.imag, min_im + padding, max_im - padding),
+            )
