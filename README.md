@@ -64,15 +64,11 @@ Because the force field is a rational function (sum of simple poles), the net ci
 
 ## Controls
 
-- **Left-Click:** Spawn a new vortex pole with random residue charge.
-- **Right-Click + Drag:** Draw a custom closed contour path $C$.
+- **Left-Click:** Spawn a new pole/particle (uses current pole order)
+- **Right-Click + Drag:** Draw a custom closed contour path \( C \)
+- **1 / 2 / 3:** Set active pole order (simple / double / triple pole)
+- **K:** Toggle TBU Keplerian / non-Hermitian mode
+- **J:** Toggle Joukowski airfoil transform view
+- **S:** Toggle Riemann sphere projection
+- **B:** Spawn a large benchmark cluster (1000 particles)
 
----
-
-## Quick Start
-
-```bash
-git clone [https://github.com/JadeAVsileyWinditt-Tec/residue-theorem-2d-particle-simulator-.git](https://github.com/JadeAVsileyWinditt-Tec/residue-theorem-2d-particle-simulator-.git)
-cd residue-theorem-2d-particle-simulator-
-pip install -r requirements.txt
-python main.py
