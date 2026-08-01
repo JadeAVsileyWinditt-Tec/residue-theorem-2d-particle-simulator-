@@ -175,7 +175,7 @@ while running:
 
     # --- GPU Physics Step ---
     if tbu_kepler_mode:
-        particles_gpu.update_tbu_keplerian_physics(dt)
+particles_gpu.update_tbu_keplerian_physics(dt, dS_dr, B_delta, K_TBU)
     else:
         particles_gpu.update_vortex_physics(bounds, dt)
 
