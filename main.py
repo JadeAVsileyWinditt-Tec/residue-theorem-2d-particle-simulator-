@@ -85,7 +85,7 @@ def complex_to_screen(z: complex) -> tuple[int, int]:
     return int(CENTER_X + z.real * SCALE), int(CENTER_Y - z.imag * SCALE)
 
 # --- Setup Simulation Objects ---
-particles_gpu = ParticleManagerGPU()
+particles_gpu = 
 
 particles_gpu.add_particle(complex(1.8, 1.2), 1.0 + 0.0j, pole_order=1, vr0=-0.2, l0=0.25)
 particles_gpu.add_particle(complex(-1.5, -1.0), 0.8 + 0.0j, pole_order=2, vr0=-0.1, l0=0.3)
