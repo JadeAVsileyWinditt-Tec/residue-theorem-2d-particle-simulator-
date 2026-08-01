@@ -2,7 +2,7 @@ import time
 import pygame
 import numpy as np
 import torch
-
+from engine.contour import ContourPolygon
 # Select NVIDIA CUDA GPU if available, else CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -178,111 +178,7 @@ class ParticleManagerGPU:
             self.positions[i] = torch.tensor(z_new, dtype=torch.complex64, device=device)
 
 
-class ContourPolygon:
-    def __init__(self):
-        self.points: list[complex] = []
-        self.is_closed = False
 
-    def clear(self):
-        self.points.clear()
-        self.is_closed = False
-
-    def add_point(self, z: complex):
-        if not self.is_closed:
-            self.points.append(z)
-
-    def close(self):
-        if len(self.points) >= 3:
-            self.is_closed = True
-
-    def contains(self, z: complex) -> bool:
-        if not self.is_closed or len(self.points) < 3:
-            return False
-        n = len(self.points)
-        inside = False
-        x, y = z.real, z.imag
-        p1 = self.points[0]
-        for i in range(n + 1):
-            p2 = self.points[i % n]
-            if y > min(p1.imag, p2.imag):
-                if y <= max(p1.imag, p2.imag):
-                    if x <= max(p1.real, p2.real):
-                        if p1.imag != p2.imag:
-                            xinters = (y - p1.imag) * (p2.real - p1.real) / (p2.imag - p1.imag) + p1.real
-                        if p1.real == p2.real or x <= xinters:
-                            inside = not inside
-            p1 = p2
-        return inside
-
-
-# --- Setup Simulation Objects ---
-particles_gpu = ParticleManagerGPU()
-
-particles_gpu.add_particle(complex(1.8, 1.2), 1.0 + 0.0j, pole_order=1, vr0=-0.2, l0=0.25)
-particles_gpu.add_particle(complex(-1.5, -1.0), 0.8 + 0.0j, pole_order=2, vr0=-0.1, l0=0.3)
-particles_gpu.add_particle(complex(0.5, 2.0), -1.2 + 0.0j, pole_order=3, vr0=-0.3, l0=0.15)
-
-contour = ContourPolygon()
-font = pygame.font.SysFont("Consolas", 14)
-font_bold = pygame.font.SysFont("Consolas", 15, bold=True)
-
-# Default circular contour loop
-default_center = 0.0 + 0.0j
-default_radius = 2.0
-for angle in np.linspace(0, 2 * np.pi, 60, endpoint=False):
-    contour.add_point(default_center + default_radius * np.exp(1j * angle))
-contour.close()
-
-running = True
-drawing_contour = False
-joukowski_mode = False
-riemann_mode = False
-tbu_kepler_mode = False
-active_pole_order = 1
-sphere_rotation_angle = 0.0
-
-while running:
-    step_start_time = time.perf_counter()
-    dt = clock.tick(60) / 1000.0
-    screen.fill(BG_COLOR)
-    sphere_rotation_angle += dt * 0.5
-
-    bounds = (-CENTER_X / SCALE, CENTER_X / SCALE, -CENTER_Y / SCALE, CENTER_Y / SCALE)
-
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_1:
-                active_pole_order = 1
-            elif event.key == pygame.K_2:
-                active_pole_order = 2
-            elif event.key == pygame.K_3:
-                active_pole_order = 3
-
-            elif event.key == pygame.K_k:
-                tbu_kepler_mode = not tbu_kepler_mode
-                if tbu_kepler_mode:
-                    joukowski_mode = False
-                    riemann_mode = False
-
-            elif event.key == pygame.K_j:
-                joukowski_mode = not joukowski_mode
-                if joukowski_mode:
-                    tbu_kepler_mode = False
-                    riemann_mode = False
-
-            elif event.key == pygame.K_s:
-                riemann_mode = not riemann_mode
-                if riemann_mode:
-                    joukowski_mode = False
-                    tbu_kepler_mode = False
-
-            elif event.key == pygame.K_b:
-                particles_gpu.spawn_benchmark_cluster(1000)
-
-        elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_z = screen_to_complex(*event.pos)
             if event.button == 1:
                 rand_res = complex(np.random.choice([-1.0, 1.0, 0.5]), np.random.choice([0.0, 0.5, -0.5]))
