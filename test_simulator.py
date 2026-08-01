@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from tbu_non_hermitian_integrator import TBUNonHermitianSimulator
+from engine.physics.tbu import TBUNonHermitianSimulator
 from engine.math.residue import ResidueEngine
 
 def test_energy_dissipation_inside_layer():
