@@ -3,7 +3,7 @@ import pygame
 import numpy as np
 import torch
 from engine.contour import ContourPolygon
-
+from engine.particles import ParticleManagerGPU
 # Select NVIDIA CUDA GPU if available, else CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
