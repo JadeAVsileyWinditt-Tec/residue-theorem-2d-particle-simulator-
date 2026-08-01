@@ -1,6 +1,5 @@
 import numpy as np
-from flow_models import PotentialFlow
-
+from engine.flows.potential import PotentialFlow
 class RK4ParticleEngine:
     """Production RK4 integrator for particles moving through analytic complex fields."""
     
