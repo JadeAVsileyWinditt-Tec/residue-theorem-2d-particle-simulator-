@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 from tbu_non_hermitian_integrator import TBUNonHermitianSimulator
-from from engine.math.residue import ResidueEngine
+from engine.math.residue import ResidueEngine
 
 def test_energy_dissipation_inside_layer():
     """Verify that effective energy monotonically decreases in the trapping regime."""
